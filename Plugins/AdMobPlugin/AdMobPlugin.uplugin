@@ -1,0 +1,24 @@
+{
+    "FileVersion": 3,
+    "Version": 2,
+    "VersionName": "2.0.0",
+    "FriendlyName": "AdMob Plugin",
+    "Description": "Runtime AdMob integration using a GameInstanceSubsystem and Blueprint function library.",
+    "Category": "Advertising",
+    "CreatedBy": "OpenAI",
+    "CanContainContent": false,
+    "IsBetaVersion": true,
+    "Installed": false,
+    "EnabledByDefault": true,
+    "Modules": [
+        {
+            "Name": "AdMobPlugin",
+            "Type": "Runtime",
+            "LoadingPhase": "PreDefault",
+            "PlatformAllowList": [
+                "Win64",
+                "Android"
+            ]
+        }
+    ]
+}

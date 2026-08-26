@@ -1,0 +1,578 @@
+<?xml version="1.0" encoding="utf-8"?>
+<root xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <init>
+        <log text="AdSMS AdMob UPL init"/>
+
+        <setBoolFromProperty result="bSupportAdMob"
+            ini="Engine"
+            section="/Script/AndroidRuntimeSettings.AndroidRuntimeSettings"
+            property="bSupportAdMob"
+            default="true"/>
+
+        <setStringFromProperty result="AdMobAppID"
+            ini="Engine"
+            section="/Script/AndroidRuntimeSettings.AndroidRuntimeSettings"
+            property="AdMobAppID"
+            default="[NOT SET]"/>
+
+        <if condition="bSupportAdMob">
+            <true>
+                <setBoolIsEqual result="bAdMobAppIDNotSet" arg1="$S(AdMobAppID)" arg2="[NOT SET]"/>
+                <setBoolIsEqual result="bAdMobAppIDEmpty" arg1="$S(AdMobAppID)" arg2=""/>
+                <setBoolOr result="bAdMobAppIDInvalid" arg1="$B(bAdMobAppIDNotSet)" arg2="$B(bAdMobAppIDEmpty)"/>
+                <if condition="bAdMobAppIDInvalid">
+                    <true>
+                        <log text="AdSMS: AdMob App ID is not set; disabling AdMob support."/>
+                        <setBool result="bSupportAdMob" value="false"/>
+                    </true>
+                </if>
+            </true>
+        </if>
+    </init>
+
+    <buildGradleAdditions>
+        <if condition="bSupportAdMob">
+            <true>
+                <insert>
+dependencies {
+    implementation('com.google.android.gms:play-services-ads:25.4.0')
+    implementation('com.google.android.gms:play-services-ads-identifier:18.0.1')
+}
+                </insert>
+            </true>
+        </if>
+    </buildGradleAdditions>
+
+    <androidManifestUpdates>
+        <!--
+            UE 5.4 can generate the legacy GameActivity.StartupPermissions
+            metadata for WRITE_EXTERNAL_STORAGE. Android then shows the
+            "Permission Required / Storage" dialog on startup. This plugin
+            does not use legacy external storage, so remove both the legacy
+            permission and the startup-permission metadata.
+        -->
+        <removePermission android:name="android.permission.READ_EXTERNAL_STORAGE"/>
+        <removePermission android:name="android.permission.WRITE_EXTERNAL_STORAGE"/>
+
+        <loopElements tag="meta-data">
+            <setStringFromAttribute result="AdMobMetaName" tag="$" name="android:name"/>
+            <setBoolIsEqual result="bIsStartupPermissions" arg1="$S(AdMobMetaName)" arg2="com.epicgames.unreal.GameActivity.StartupPermissions"/>
+            <if condition="bIsStartupPermissions">
+                <true>
+                    <removeAttribute tag="$" name="android:value"/>
+                    <addAttribute tag="$" name="android:value" value=""/>
+                </true>
+            </if>
+        </loopElements>
+
+        <if condition="bSupportAdMob">
+            <true>
+                <addPermission android:name="android.permission.INTERNET"/>
+                <addPermission android:name="android.permission.ACCESS_NETWORK_STATE"/>
+                <setElement result="AdMobMeta" value="meta-data"/>
+                <addAttribute tag="$AdMobMeta" name="android:name" value="com.google.android.gms.ads.APPLICATION_ID"/>
+                <addAttribute tag="$AdMobMeta" name="android:value" value="$S(AdMobAppID)"/>
+                <addElement tag="application" name="AdMobMeta"/>
+            </true>
+        </if>
+    </androidManifestUpdates>
+
+    <gameActivityImportAdditions>
+        <if condition="bSupportAdMob">
+            <true>
+                <insert>
+import com.google.android.gms.ads.MobileAds;
+import com.google.android.gms.ads.initialization.InitializationStatus;
+import com.google.android.gms.ads.initialization.OnInitializationCompleteListener;
+import com.google.android.gms.ads.AdRequest;
+import com.google.android.gms.ads.AdView;
+import com.google.android.gms.ads.AdSize;
+import com.google.android.gms.ads.AdListener;
+import com.google.android.gms.ads.AdError;
+import com.google.android.gms.ads.LoadAdError;
+import com.google.android.gms.ads.FullScreenContentCallback;
+import com.google.android.gms.ads.interstitial.InterstitialAd;
+import com.google.android.gms.ads.interstitial.InterstitialAdLoadCallback;
+import com.google.android.gms.ads.rewarded.RewardedAd;
+import com.google.android.gms.ads.rewarded.RewardedAdLoadCallback;
+import com.google.android.gms.ads.OnUserEarnedRewardListener;
+import com.google.android.gms.ads.rewarded.RewardItem;
+import android.graphics.Color;
+import android.view.Gravity;
+import android.view.WindowManager;
+import android.widget.LinearLayout;
+import android.widget.PopupWindow;
+                </insert>
+            </true>
+        </if>
+    </gameActivityImportAdditions>
+
+    <gameActivityClassAdditions>
+        <if condition="bSupportAdMob">
+            <true>
+                <insert>
+<![CDATA[
+    private InterstitialAd adsmInterstitialAd = null;
+    private boolean adsmInterstitialLoaded = false;
+    private boolean adsmInterstitialRequested = false;
+    private String adsmInterstitialUnitID = null;
+
+    private RewardedAd adsmRewardedAd = null;
+    private boolean adsmRewardedLoaded = false;
+    private boolean adsmRewardedRequested = false;
+    private boolean adsmRewardedEarned = false;
+    private int adsmRewardedAmount = 0;
+    private String adsmRewardedType = "";
+
+    private AdView adsmBannerView = null;
+    private PopupWindow adsmBannerPopup = null;
+    private LinearLayout adsmBannerLayout = null;
+    private boolean adsmBannerLoaded = false;
+
+    private void AdSMSShowBannerPopup(boolean bottom)
+    {
+        if (adsmBannerView == null || adsmBannerLayout == null) return;
+
+        try
+        {
+            if (adsmBannerPopup == null)
+            {
+                adsmBannerPopup = new PopupWindow(
+                    adsmBannerLayout,
+                    WindowManager.LayoutParams.MATCH_PARENT,
+                    WindowManager.LayoutParams.WRAP_CONTENT,
+                    false
+                );
+                adsmBannerPopup.setBackgroundDrawable(
+                    new android.graphics.drawable.ColorDrawable(Color.TRANSPARENT)
+                );
+                adsmBannerPopup.setOutsideTouchable(false);
+                adsmBannerPopup.setTouchable(true);
+                adsmBannerPopup.setClippingEnabled(false);
+            }
+
+            int gravity = bottom
+                ? Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL
+                : Gravity.TOP | Gravity.CENTER_HORIZONTAL;
+
+            if (!adsmBannerPopup.isShowing())
+            {
+                adsmBannerPopup.showAtLocation(
+                    _activity.getWindow().getDecorView(),
+                    gravity,
+                    0,
+                    0
+                );
+            }
+        }
+        catch (Exception e)
+        {
+            Log.debug("AdSMS: Banner popup error: " + e.getMessage());
+        }
+    }
+
+    private void AdSMSHideBannerPopup()
+    {
+        try
+        {
+            if (adsmBannerPopup != null && adsmBannerPopup.isShowing())
+            {
+                adsmBannerPopup.dismiss();
+            }
+        }
+        catch (Exception e)
+        {
+            Log.debug("AdSMS: Banner hide error: " + e.getMessage());
+        }
+    }
+
+    public void AndroidThunkJava_ShowAdBanner(String AdMobAdUnitID)
+    {
+        AndroidThunkJava_ShowAdBanner(AdMobAdUnitID, true);
+    }
+
+    public void AndroidThunkJava_ShowAdBanner(final String AdMobAdUnitID, final boolean bShowOnBottomOfScreen)
+    {
+        if (AdMobAdUnitID == null || AdMobAdUnitID.length() == 0) return;
+
+        _activity.runOnUiThread(new Runnable()
+        {
+            @Override
+            public void run()
+            {
+                try
+                {
+                    if (adsmBannerView != null && adsmBannerLoaded)
+                    {
+                        AdSMSShowBannerPopup(bShowOnBottomOfScreen);
+                        return;
+                    }
+
+                    AdSMSHideBannerPopup();
+
+                    adsmBannerView = new AdView(_activity);
+                    adsmBannerView.setAdUnitId(AdMobAdUnitID);
+                    adsmBannerView.setAdSize(AdSize.BANNER);
+
+                    adsmBannerView.setAdListener(new AdListener()
+                    {
+                        @Override
+                        public void onAdLoaded()
+                        {
+                            adsmBannerLoaded = true;
+                            Log.debug("AdSMS: Banner loaded successfully.");
+                            AdSMSShowBannerPopup(bShowOnBottomOfScreen);
+                        }
+
+                        @Override
+                        public void onAdFailedToLoad(LoadAdError error)
+                        {
+                            adsmBannerLoaded = false;
+                            Log.debug("AdSMS: Banner failed: " + error.getMessage());
+                        }
+                    });
+
+                    adsmBannerLayout = new LinearLayout(_activity);
+                    adsmBannerLayout.setOrientation(LinearLayout.VERTICAL);
+                    adsmBannerLayout.setGravity(Gravity.CENTER_HORIZONTAL);
+                    adsmBannerLayout.setBackgroundColor(Color.TRANSPARENT);
+                    adsmBannerLayout.addView(
+                        adsmBannerView,
+                        new LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.WRAP_CONTENT,
+                            LinearLayout.LayoutParams.WRAP_CONTENT
+                        )
+                    );
+
+                    AdSMSShowBannerPopup(bShowOnBottomOfScreen);
+                    adsmBannerView.loadAd(new AdRequest.Builder().build());
+                }
+                catch (Exception e)
+                {
+                    adsmBannerLoaded = false;
+                    Log.debug("AdSMS: Banner exception: " + e.getMessage());
+                }
+            }
+        });
+    }
+
+    public boolean AndroidThunkJava_IsBannerAdAvailable()
+    {
+        return adsmBannerView != null && adsmBannerLoaded;
+    }
+
+    public void AndroidThunkJava_HideAdBanner()
+    {
+        _activity.runOnUiThread(new Runnable()
+        {
+            @Override
+            public void run()
+            {
+                AdSMSHideBannerPopup();
+            }
+        });
+    }
+
+    public void AndroidThunkJava_CloseAdBanner()
+    {
+        _activity.runOnUiThread(new Runnable()
+        {
+            @Override
+            public void run()
+            {
+                try
+                {
+                    AdSMSHideBannerPopup();
+                    if (adsmBannerView != null) adsmBannerView.destroy();
+                    adsmBannerView = null;
+                    adsmBannerLayout = null;
+                    adsmBannerPopup = null;
+                    adsmBannerLoaded = false;
+                }
+                catch (Exception e)
+                {
+                    Log.debug("AdSMS: Banner close exception: " + e.getMessage());
+                }
+            }
+        });
+    }
+
+    public void AndroidThunkJava_LoadInterstitialAd(final String AdMobAdUnitID)
+    {
+        if (AdMobAdUnitID == null || AdMobAdUnitID.length() == 0) return;
+        if (adsmInterstitialLoaded || adsmInterstitialRequested) return;
+
+        adsmInterstitialRequested = true;
+        adsmInterstitialLoaded = false;
+        adsmInterstitialUnitID = AdMobAdUnitID;
+
+        _activity.runOnUiThread(new Runnable()
+        {
+            @Override
+            public void run()
+            {
+                InterstitialAd.load(
+                    _activity,
+                    adsmInterstitialUnitID,
+                    new AdRequest.Builder().build(),
+                    new InterstitialAdLoadCallback()
+                    {
+                        @Override
+                        public void onAdLoaded(InterstitialAd ad)
+                        {
+                            adsmInterstitialAd = ad;
+                            adsmInterstitialLoaded = true;
+                            adsmInterstitialRequested = false;
+                            Log.debug("AdSMS: Interstitial loaded.");
+
+                            adsmInterstitialAd.setFullScreenContentCallback(
+                                new FullScreenContentCallback()
+                                {
+                                    @Override
+                                    public void onAdDismissedFullScreenContent()
+                                    {
+                                        adsmInterstitialAd = null;
+                                        adsmInterstitialLoaded = false;
+                                        adsmInterstitialRequested = false;
+                                        AndroidThunkJava_LoadInterstitialAd(adsmInterstitialUnitID);
+                                    }
+
+                                    @Override
+                                    public void onAdFailedToShowFullScreenContent(AdError error)
+                                    {
+                                        adsmInterstitialAd = null;
+                                        adsmInterstitialLoaded = false;
+                                        adsmInterstitialRequested = false;
+                                    }
+                                }
+                            );
+                        }
+
+                        @Override
+                        public void onAdFailedToLoad(LoadAdError error)
+                        {
+                            adsmInterstitialAd = null;
+                            adsmInterstitialLoaded = false;
+                            adsmInterstitialRequested = false;
+                            Log.debug("AdSMS: Interstitial failed: " + error.getMessage());
+                        }
+                    }
+                );
+            }
+        });
+    }
+
+    public boolean AndroidThunkJava_IsInterstitialAdAvailable()
+    {
+        return adsmInterstitialAd != null && adsmInterstitialLoaded;
+    }
+
+    public boolean AndroidThunkJava_IsInterstitialAdRequested()
+    {
+        return adsmInterstitialRequested;
+    }
+
+    public void AndroidThunkJava_ShowInterstitialAd()
+    {
+        if (adsmInterstitialAd == null || !adsmInterstitialLoaded) return;
+
+        _activity.runOnUiThread(new Runnable()
+        {
+            @Override
+            public void run()
+            {
+                if (adsmInterstitialAd != null && adsmInterstitialLoaded)
+                {
+                    adsmInterstitialLoaded = false;
+                    adsmInterstitialAd.show(_activity);
+                }
+            }
+        });
+    }
+
+    public void AndroidThunkJava_LoadRewardedAd(final String AdMobAdUnitID)
+    {
+        if (AdMobAdUnitID == null || AdMobAdUnitID.length() == 0) return;
+        if (adsmRewardedLoaded || adsmRewardedRequested) return;
+
+        adsmRewardedRequested = true;
+        adsmRewardedLoaded = false;
+
+        final String RewardedID = AdMobAdUnitID;
+
+        _activity.runOnUiThread(new Runnable()
+        {
+            @Override
+            public void run()
+            {
+                RewardedAd.load(
+                    _activity,
+                    RewardedID,
+                    new AdRequest.Builder().build(),
+                    new RewardedAdLoadCallback()
+                    {
+                        @Override
+                        public void onAdLoaded(RewardedAd ad)
+                        {
+                            adsmRewardedAd = ad;
+                            adsmRewardedLoaded = true;
+                            adsmRewardedRequested = false;
+                            Log.debug("AdSMS: Rewarded loaded.");
+
+                            adsmRewardedAd.setFullScreenContentCallback(
+                                new FullScreenContentCallback()
+                                {
+                                    @Override
+                                    public void onAdDismissedFullScreenContent()
+                                    {
+                                        adsmRewardedAd = null;
+                                        adsmRewardedLoaded = false;
+                                        adsmRewardedRequested = false;
+                                        AndroidThunkJava_LoadRewardedAd(RewardedID);
+                                    }
+
+                                    @Override
+                                    public void onAdFailedToShowFullScreenContent(AdError error)
+                                    {
+                                        adsmRewardedAd = null;
+                                        adsmRewardedLoaded = false;
+                                        adsmRewardedRequested = false;
+                                    }
+                                }
+                            );
+                        }
+
+                        @Override
+                        public void onAdFailedToLoad(LoadAdError error)
+                        {
+                            adsmRewardedAd = null;
+                            adsmRewardedLoaded = false;
+                            adsmRewardedRequested = false;
+                            Log.debug("AdSMS: Rewarded failed: " + error.getMessage());
+                        }
+                    }
+                );
+            }
+        });
+    }
+
+    public boolean AndroidThunkJava_IsRewardedAdAvailable()
+    {
+        return adsmRewardedAd != null && adsmRewardedLoaded;
+    }
+
+    public boolean AndroidThunkJava_IsRewardedAdRequested()
+    {
+        return adsmRewardedRequested;
+    }
+
+    public void AndroidThunkJava_ShowRewardedAd()
+    {
+        if (adsmRewardedAd == null || !adsmRewardedLoaded) return;
+
+        _activity.runOnUiThread(new Runnable()
+        {
+            @Override
+            public void run()
+            {
+                if (adsmRewardedAd != null && adsmRewardedLoaded)
+                {
+                    adsmRewardedLoaded = false;
+
+                    adsmRewardedAd.show(
+                        _activity,
+                        new OnUserEarnedRewardListener()
+                        {
+                            @Override
+                            public void onUserEarnedReward(RewardItem rewardItem)
+                            {
+                                if (rewardItem != null)
+                                {
+                                    adsmRewardedAmount = rewardItem.getAmount();
+                                    adsmRewardedType = rewardItem.getType();
+                                    adsmRewardedEarned = true;
+                                    Log.debug("AdSMS: Reward earned.");
+                                }
+                            }
+                        }
+                    );
+                }
+            }
+        });
+    }
+
+    public boolean AndroidThunkJava_IsRewardedAdEarned()
+    {
+        return adsmRewardedEarned;
+    }
+
+    public int AndroidThunkJava_GetRewardedAmount()
+    {
+        return adsmRewardedAmount;
+    }
+
+    public String AndroidThunkJava_GetRewardedType()
+    {
+        return adsmRewardedType;
+    }
+
+    public void AndroidThunkJava_ClearRewardedEarned()
+    {
+        adsmRewardedEarned = false;
+        adsmRewardedAmount = 0;
+        adsmRewardedType = "";
+    }
+
+    public void AndroidThunkJava_ConsumeRewardedEarned()
+    {
+        adsmRewardedEarned = false;
+        adsmRewardedAmount = 0;
+        adsmRewardedType = "";
+    }
+]]>
+                </insert>
+            </true>
+            <false>
+                <insert>
+    public void AndroidThunkJava_ShowAdBanner(String AdMobAdUnitID) { }
+    public void AndroidThunkJava_ShowAdBanner(String AdMobAdUnitID, boolean bShowOnBottomOfScreen) { }
+    public boolean AndroidThunkJava_IsBannerAdAvailable() { return false; }
+    public void AndroidThunkJava_HideAdBanner() { }
+    public void AndroidThunkJava_CloseAdBanner() { }
+    public void AndroidThunkJava_LoadInterstitialAd(String AdMobAdUnitID) { }
+    public boolean AndroidThunkJava_IsInterstitialAdAvailable() { return false; }
+    public boolean AndroidThunkJava_IsInterstitialAdRequested() { return false; }
+    public void AndroidThunkJava_ShowInterstitialAd() { }
+    public void AndroidThunkJava_LoadRewardedAd(String AdMobAdUnitID) { }
+    public boolean AndroidThunkJava_IsRewardedAdAvailable() { return false; }
+    public boolean AndroidThunkJava_IsRewardedAdRequested() { return false; }
+    public void AndroidThunkJava_ShowRewardedAd() { }
+    public boolean AndroidThunkJava_IsRewardedAdEarned() { return false; }
+    public int AndroidThunkJava_GetRewardedAmount() { return 0; }
+    public String AndroidThunkJava_GetRewardedType() { return ""; }
+    public void AndroidThunkJava_ClearRewardedEarned() { }
+    public void AndroidThunkJava_ConsumeRewardedEarned() { }
+</insert>
+            </false>
+        </if>
+    </gameActivityClassAdditions>
+
+    <gameActivityOnCreateAdditions>
+        <if condition="bSupportAdMob">
+            <true>
+                <insert>
+        MobileAds.initialize(this, new OnInitializationCompleteListener()
+        {
+            @Override
+            public void onInitializationComplete(InitializationStatus initializationStatus)
+            {
+                Log.debug("AdSMS: MobileAds initialization complete.");
+            }
+        });
+                </insert>
+            </true>
+        </if>
+    </gameActivityOnCreateAdditions>
+
+</root>
